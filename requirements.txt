@@ -3,3 +3,6 @@ pandas
 scikit-learn
 shap
 python-dotenv
+pytest
+fastapi
+uvicorn[standard]

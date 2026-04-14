@@ -1,6 +1,39 @@
 # 02 - Agentic ML Pipeline (Auto-EDA to Model Card)
 
+[![CI](https://github.com/milos-plavsic/agentic-ml-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/milos-plavsic/agentic-ml-pipeline/actions/workflows/ci.yml)
+[![Python3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
+
 An AI-driven machine learning workflow that inspects tabular data, selects modeling strategy, trains candidate models, explains outcomes, and exports a reproducible model card.
+
+## Quickstart
+
+```bash
+make install
+make run
+make api
+make test
+```
+
+Docker API: `make docker-api`.
+
+## API
+
+- OpenAPI docs: `http://127.0.0.1:8000/docs`
+- Health: `GET /health`
+- Pipeline run: `POST /v1/pipeline/run` with JSON body `{"dataset_name":"..."}`
+
+## Architecture
+
+```mermaid
+flowchart LR
+  D[Dataset] --> Prof[Profiler]
+  Prof --> R[Task router]
+  R --> F[Feature engineer]
+  F --> T[Model trainer]
+  T --> E[Evaluator]
+  E --> X[Explainability]
+  X --> M[Model card]
+```
 
 ## Why This Project Stands Out
 
