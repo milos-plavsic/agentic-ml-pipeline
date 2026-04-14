@@ -1,3 +1,5 @@
+import math
+
 from fastapi.testclient import TestClient
 
 from app.api import app
@@ -11,8 +13,11 @@ def test_health() -> None:
 
 
 def test_pipeline_run() -> None:
-    r = client.post("/v1/pipeline/run", json={"dataset_name": "demo.csv"})
+    r = client.post("/v1/pipeline/run", json={"dataset_name": "uci_student_math"})
     assert r.status_code == 200
     data = r.json()
-    assert data["dataset"] == "demo.csv"
-    assert "best_model" in data
+    assert data["dataset"] == "uci_student_math"
+    assert data["task"] == "regression"
+    assert data["test_mae"] >= 0
+    assert math.isfinite(data["test_r2"])
+    assert data["n_rows"] > 50

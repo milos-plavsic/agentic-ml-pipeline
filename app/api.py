@@ -7,7 +7,10 @@ app = FastAPI(title="Agentic ML Pipeline", version="0.1.0")
 
 
 class TrainRequest(BaseModel):
-    dataset_name: str = Field(..., min_length=1, description="Dataset identifier or path")
+    dataset_name: str = Field(
+        "uci_student_math",
+        description="Only `uci_student_math` is supported (UCI student-mat.csv).",
+    )
 
 
 @app.get("/health")
