@@ -1,0 +1,5 @@
+langgraph
+pandas
+scikit-learn
+shap
+python-dotenv
