@@ -16,6 +16,11 @@ make test
 
 Docker API: `make docker-api`.
 
+## Related repos (tabular ensembles)
+
+- [tabular-ensemble-arena](https://github.com/milos-plavsic/tabular-ensemble-arena) — **Random Forest**, **XGBoost**, and **CatBoost** on numeric tabular data with stratified CV and a leaderboard API.
+- [categorical-boost-lab](https://github.com/milos-plavsic/categorical-boost-lab) — mixed numeric + categorical features: **OneHot + RF**, **Ordinal + XGBoost**, **native CatBoost**.
+
 ## API
 
 - OpenAPI docs: `http://127.0.0.1:8000/docs`
