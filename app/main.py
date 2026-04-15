@@ -1,45 +1,33 @@
 import os
 
-import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
-
-from app.datasets import DATA_SOURCE, load_student_math, prepare_regression_xy
+from app.langgraph_pipeline import run_agentic_pipeline
 
 
-def run_pipeline(dataset_name: str = "uci_student_math") -> dict:
-    df = load_student_math()
-    X, y = prepare_regression_xy(df)
-    X = pd.get_dummies(X, drop_first=True)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+def run_pipeline(
+    dataset_name: str = "uci_student_math",
+    *,
+    confidence_threshold: float = 0.68,
+    max_iterations: int = 3,
+    random_state: int = 42,
+) -> dict:
+    return run_agentic_pipeline(
+        dataset_name=dataset_name,
+        confidence_threshold=confidence_threshold,
+        max_iterations=max_iterations,
+        random_state=random_state,
     )
-    model = RandomForestRegressor(
-        n_estimators=250,
-        max_depth=12,
-        random_state=42,
-        n_jobs=4,
-    )
-    model.fit(X_train, y_train)
-    pred = model.predict(X_test)
-    return {
-        "dataset": dataset_name,
-        "task": "regression",
-        "target": "G3_final_math_grade",
-        "n_rows": int(len(df)),
-        "n_features_encoded": int(X.shape[1]),
-        "model": "RandomForestRegressor",
-        "test_mae": float(mean_absolute_error(y_test, pred)),
-        "test_r2": float(r2_score(y_test, pred)),
-        "data_source": DATA_SOURCE,
-    }
 
 
 def main() -> None:
     dataset_name = os.getenv("DEMO_DATASET", "uci_student_math")
-    result = run_pipeline(dataset_name)
-    print("Agentic ML Pipeline (real educational data)")
+    confidence_threshold = float(os.getenv("PIPELINE_CONFIDENCE_THRESHOLD", "0.68"))
+    max_iterations = int(os.getenv("PIPELINE_MAX_ITERATIONS", "3"))
+    result = run_pipeline(
+        dataset_name,
+        confidence_threshold=confidence_threshold,
+        max_iterations=max_iterations,
+    )
+    print("Agentic ML Pipeline (LangGraph with confidence loop)")
     for key, value in result.items():
         print(f"{key}: {value}")
 
