@@ -1,6 +1,8 @@
 langgraph
 pandas
+numpy
 scikit-learn
+matplotlib
 shap
 python-dotenv
 pytest
