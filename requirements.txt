@@ -6,5 +6,6 @@ matplotlib
 shap
 python-dotenv
 pytest
+httpx
 fastapi
 uvicorn[standard]
