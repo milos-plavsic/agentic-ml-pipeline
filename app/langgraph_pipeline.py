@@ -5,49 +5,52 @@ from typing import Any, Literal, TypedDict
 import numpy as np
 import pandas as pd
 from langgraph.graph import END, StateGraph
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
+from ml_core import configure_logging
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    RandomForestRegressor,
+)
+from sklearn.metrics import (
+    mean_absolute_error,
+    precision_score,
+    r2_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import KFold, cross_val_score, train_test_split
 
 from app.datasets import DATA_SOURCE, load_student_math
 from app.orchestration_policy import (
     confidence_label,
     decide_loop,
+    normalize_threshold,
     normalized_mae_quality,
     normalized_r2_quality,
     normalized_stability,
-    normalize_threshold,
     weighted_confidence,
 )
 
-
-class IterationMetrics(TypedDict):
-    iteration: int
-    include_prior_grades: bool
-    n_estimators: int
-    max_depth: int | None
-    min_samples_leaf: int
-    n_features_encoded: int
-    test_mae: float
-    test_r2: float
-    cv_mae_mean: float
-    cv_mae_std: float
-    cv_r2_mean: float
-    cv_r2_std: float
-    confidence_score: float
+logger = configure_logging("langgraph_pipeline")
 
 
 class PipelineState(TypedDict, total=False):
-    dataset_name: str
-    confidence_threshold: float
-    max_iterations: int
-    random_state: int
+    """LangGraph pipeline state — all fields are optional so partial updates work."""
 
+    dataset_name: str
+    data: Any | None
+    features: Any | None
+    model: Any | None
+    metrics: dict | None
     iteration: int
-    include_prior_grades: bool
-    n_estimators: int
-    max_depth: int | None
-    min_samples_leaf: int
+    confidence: float
+    max_iterations: int
+    confidence_threshold: float
+    error: str | None
+
+    # Extended internal fields
+    confidence_label: str
+    continue_loop: bool
+    stop_reason: str
 
     raw_df: pd.DataFrame
     X_full: pd.DataFrame
@@ -56,7 +59,6 @@ class PipelineState(TypedDict, total=False):
     X_test: pd.DataFrame
     y_train: np.ndarray
     y_test: np.ndarray
-
     y_pred: np.ndarray
     test_mae: float
     test_r2: float
@@ -65,122 +67,175 @@ class PipelineState(TypedDict, total=False):
     cv_r2_mean: float
     cv_r2_std: float
 
-    confidence_score: float
-    confidence_label: str
-    continue_loop: bool
-    stop_reason: str
+    include_prior_grades: bool
+    n_estimators: int
+    max_depth: int | None
+    min_samples_leaf: int
 
     model_name: str
-    history: list[IterationMetrics]
+    history: list[dict]
     decisions: list[str]
+
+    # For classification mode (roc-auc / precision / recall)
+    roc_auc: float | None
+    precision: float | None
+    recall: float | None
+    task_type: str  # "regression" or "classification"
 
 
 SUPPORTED_DATASET = "uci_student_math"
 
 
-def _validate_request(state: PipelineState) -> PipelineState:
-    ds = state.get("dataset_name", SUPPORTED_DATASET)
-    if ds != SUPPORTED_DATASET:
-        raise ValueError(f"unsupported dataset: {ds!r}")
-
-    return {
-        "dataset_name": ds,
-        "confidence_threshold": normalize_threshold(state.get("confidence_threshold", 0.68)),
-        "max_iterations": max(1, int(state.get("max_iterations", 3))),
-        "random_state": int(state.get("random_state", 42)),
-        "iteration": 0,
-        "history": [],
-        "decisions": [],
-        "model_name": "RandomForestRegressor",
-    }
+# ---------------------------------------------------------------------------
+# Node: load_data_node
+# ---------------------------------------------------------------------------
 
 
-def _load_dataset(state: PipelineState) -> PipelineState:
+def load_data_node(state: PipelineState) -> PipelineState:
+    """Load UCI student math dataset and store in state."""
+    dataset_name = state.get("dataset_name", SUPPORTED_DATASET)
+    if dataset_name != SUPPORTED_DATASET:
+        return {"error": f"unsupported dataset: {dataset_name!r}"}
+
+    # Initialise loop bookkeeping on first call
+    updates: PipelineState = {}
+    if state.get("confidence_threshold") is None:
+        updates["confidence_threshold"] = normalize_threshold(0.68)
+    if state.get("max_iterations") is None:
+        updates["max_iterations"] = 3
+    if state.get("iteration") is None:
+        updates["iteration"] = 0
+    if state.get("history") is None:
+        updates["history"] = []
+    if state.get("decisions") is None:
+        updates["decisions"] = []
+    if state.get("model_name") is None:
+        updates["model_name"] = "RandomForestRegressor"
+
     df = load_student_math()
     y = df["G3"].to_numpy(dtype=np.float64)
-    return {"raw_df": df, "y_full": y}
+    logger.info(f"Loaded dataset: {df.shape[0]} rows")
+    updates["data"] = df
+    updates["raw_df"] = df
+    updates["y_full"] = y
+    updates["dataset_name"] = dataset_name
+    updates["task_type"] = "regression"
+    updates["error"] = None
+    return updates
 
 
-def _plan_iteration(state: PipelineState) -> PipelineState:
-    it = int(state["iteration"]) + 1
-    include_prior = it >= 2
-    n_estimators = 260 if it == 1 else 420
-    max_depth: int | None = 12 if it == 1 else None
-    min_samples_leaf = 2 if it == 1 else 1
-
-    decision = (
-        f"iteration={it}: include_prior_grades={include_prior}, "
-        f"n_estimators={n_estimators}, max_depth={max_depth}, min_samples_leaf={min_samples_leaf}"
-    )
-
-    return {
-        "iteration": it,
-        "include_prior_grades": include_prior,
-        "n_estimators": n_estimators,
-        "max_depth": max_depth,
-        "min_samples_leaf": min_samples_leaf,
-        "decisions": [*state["decisions"], decision],
-    }
+# ---------------------------------------------------------------------------
+# Node: preprocess_node
+# ---------------------------------------------------------------------------
 
 
-def _prepare_features(state: PipelineState) -> PipelineState:
-    df = state["raw_df"]
+def preprocess_node(state: PipelineState) -> PipelineState:
+    """Feature engineering: encode categoricals, handle nulls, train/test split."""
+    df: pd.DataFrame = state["raw_df"]
+    it = int(state.get("iteration", 0)) + 1
+    include_prior_grades = it >= 2
+
     cols_to_drop = ["G3"]
-    if not state["include_prior_grades"]:
+    if not include_prior_grades:
         cols_to_drop.extend(["G1", "G2"])
 
     Xdf = df.drop(columns=cols_to_drop)
+    # One-hot encode all categorical columns
     Xdf = pd.get_dummies(Xdf, drop_first=True)
 
+    # Handle any remaining nulls
+    Xdf = Xdf.fillna(Xdf.median(numeric_only=True))
+
+    n_estimators = 24 if it == 1 else 48
+    max_depth: int | None = 10 if it == 1 else 12
+    min_samples_leaf = 2 if it == 1 else 1
+
+    decision = (
+        f"iteration={it}: include_prior_grades={include_prior_grades}, "
+        f"n_estimators={n_estimators}, max_depth={max_depth}"
+    )
+
+    rng = int(state.get("random_state", 42)) if hasattr(state, "get") else 42  # type: ignore[call-overload]
     X_train, X_test, y_train, y_test = train_test_split(
         Xdf,
         state["y_full"],
         test_size=0.2,
-        random_state=state["random_state"],
+        random_state=rng,
     )
 
     return {
+        "features": Xdf,
         "X_full": Xdf,
         "X_train": X_train,
         "X_test": X_test,
         "y_train": y_train,
         "y_test": y_test,
+        "iteration": it,
+        "include_prior_grades": include_prior_grades,
+        "n_estimators": n_estimators,
+        "max_depth": max_depth,
+        "min_samples_leaf": min_samples_leaf,
+        "decisions": [*state.get("decisions", []), decision],
     }
 
 
-def _train_and_evaluate(state: PipelineState) -> PipelineState:
-    model = RandomForestRegressor(
-        n_estimators=state["n_estimators"],
-        max_depth=state["max_depth"],
-        min_samples_leaf=state["min_samples_leaf"],
-        random_state=state["random_state"],
-        n_jobs=4,
-    )
+# ---------------------------------------------------------------------------
+# Node: train_node
+# ---------------------------------------------------------------------------
 
-    model.fit(state["X_train"], state["y_train"])
+
+def train_node(state: PipelineState) -> PipelineState:
+    """Train RandomForest / GradientBoosting model and compute CV metrics."""
+    it = int(state.get("iteration", 1))
+
+    # Alternate between RF and GB on successive iterations to explore
+    if it % 2 == 0:
+        model = GradientBoostingClassifier(
+            n_estimators=state.get("n_estimators", 48),
+            max_depth=state.get("max_depth", 5) or 5,
+            random_state=42,
+        )
+        model_name = "GradientBoostingClassifier"
+    else:
+        model = RandomForestRegressor(
+            n_estimators=state.get("n_estimators", 24),
+            max_depth=state.get("max_depth", 10),
+            min_samples_leaf=state.get("min_samples_leaf", 2),
+            random_state=42,
+            n_jobs=1,
+        )
+        model_name = "RandomForestRegressor"
+
+    X_train = state["X_train"]
+    y_train = state["y_train"]
+
+    model.fit(X_train, y_train)
     pred = model.predict(state["X_test"])
+
     mae = float(mean_absolute_error(state["y_test"], pred))
     r2 = float(r2_score(state["y_test"], pred))
 
-    cv = KFold(n_splits=3, shuffle=True, random_state=state["random_state"])
+    cv = KFold(n_splits=3, shuffle=True, random_state=42)
     cv_mae = -cross_val_score(
         model,
-        state["X_train"],
-        state["y_train"],
+        X_train,
+        y_train,
         cv=cv,
         scoring="neg_mean_absolute_error",
         n_jobs=1,
     )
     cv_r2 = cross_val_score(
         model,
-        state["X_train"],
-        state["y_train"],
+        X_train,
+        y_train,
         cv=cv,
         scoring="r2",
         n_jobs=1,
     )
 
     return {
+        "model": model,
+        "model_name": model_name,
         "y_pred": pred,
         "test_mae": mae,
         "test_r2": r2,
@@ -191,28 +246,38 @@ def _train_and_evaluate(state: PipelineState) -> PipelineState:
     }
 
 
-def _assess_confidence(state: PipelineState) -> PipelineState:
+# ---------------------------------------------------------------------------
+# Node: evaluate_node
+# ---------------------------------------------------------------------------
+
+
+def evaluate_node(state: PipelineState) -> PipelineState:
+    """Compute confidence score from metrics; decide whether to re-train."""
     components = {
         "primary_quality": normalized_mae_quality(state["test_mae"]),
         "secondary_quality": normalized_r2_quality(state["test_r2"]),
         "stability": normalized_stability(state["cv_r2_std"]),
     }
-    score = weighted_confidence(components)
+    score = float(weighted_confidence(components))
     label = confidence_label(score)
+
+    threshold = float(state.get("confidence_threshold", 0.68))
+    it = int(state.get("iteration", 1))
+    max_it = int(state.get("max_iterations", 3))
 
     loop = decide_loop(
         confidence_score=score,
-        confidence_threshold=state["confidence_threshold"],
-        iteration=state["iteration"],
-        max_iterations=state["max_iterations"],
+        confidence_threshold=threshold,
+        iteration=it,
+        max_iterations=max_it,
     )
 
-    iteration_summary: IterationMetrics = {
-        "iteration": state["iteration"],
-        "include_prior_grades": state["include_prior_grades"],
-        "n_estimators": state["n_estimators"],
-        "max_depth": state["max_depth"],
-        "min_samples_leaf": state["min_samples_leaf"],
+    iteration_summary = {
+        "iteration": it,
+        "include_prior_grades": state.get("include_prior_grades", False),
+        "n_estimators": state.get("n_estimators", 24),
+        "max_depth": state.get("max_depth"),
+        "min_samples_leaf": state.get("min_samples_leaf", 2),
         "n_features_encoded": int(state["X_full"].shape[1]),
         "test_mae": state["test_mae"],
         "test_r2": state["test_r2"],
@@ -223,51 +288,120 @@ def _assess_confidence(state: PipelineState) -> PipelineState:
         "confidence_score": score,
     }
 
+    # Also compute ROC-AUC / precision / recall for binary classification proxy
+    # (G3 >= 10 is considered a pass)
+    y_test = state["y_test"]
+    y_pred_raw = state["y_pred"]
+    y_binary = (y_test >= 10).astype(int)
+    y_pred_binary = (y_pred_raw >= 10).astype(int)
+
+    roc_auc: float | None = None
+    precision: float | None = None
+    recall: float | None = None
+
+    try:
+        if len(np.unique(y_binary)) > 1:
+            roc_auc = float(roc_auc_score(y_binary, y_pred_binary))
+            precision = float(precision_score(y_binary, y_pred_binary, zero_division=0))
+            recall = float(recall_score(y_binary, y_pred_binary, zero_division=0))
+    except Exception:
+        pass
+
     return {
-        "confidence_score": score,
+        "metrics": {
+            "test_mae": state["test_mae"],
+            "test_r2": state["test_r2"],
+            "confidence_score": score,
+            "roc_auc": roc_auc,
+            "precision": precision,
+            "recall": recall,
+        },
+        "confidence": score,
         "confidence_label": label,
         "continue_loop": loop["continue_loop"],
         "stop_reason": loop["stop_reason"],
-        "history": [*state["history"], iteration_summary],
+        "roc_auc": roc_auc,
+        "precision": precision,
+        "recall": recall,
+        "history": [*state.get("history", []), iteration_summary],
     }
 
 
-def _route_after_assessment(state: PipelineState) -> Literal["prepare_features", "finalize"]:
-    return "prepare_features" if state["continue_loop"] else "finalize"
+# ---------------------------------------------------------------------------
+# Node: report_node
+# ---------------------------------------------------------------------------
 
 
-def _finalize(state: PipelineState) -> PipelineState:
-    return {"stop_reason": state["stop_reason"]}
+def report_node(state: PipelineState) -> PipelineState:
+    """Format the final report dictionary and store it in state."""
+    report = {
+        "dataset": state.get("dataset_name", SUPPORTED_DATASET),
+        "task": "regression",
+        "target": "G3_final_math_grade",
+        "n_rows": int(len(state["raw_df"])),
+        "n_features_encoded": int(state["X_full"].shape[1]),
+        "model": state.get("model_name", "RandomForestRegressor"),
+        "test_mae": float(state["test_mae"]),
+        "test_r2": float(state["test_r2"]),
+        "cv_mae_mean": float(state["cv_mae_mean"]),
+        "cv_mae_std": float(state["cv_mae_std"]),
+        "cv_r2_mean": float(state["cv_r2_mean"]),
+        "cv_r2_std": float(state["cv_r2_std"]),
+        "confidence_score": float(state.get("confidence", state.get("confidence_score", 0.0))),
+        "confidence_label": state.get("confidence_label", "low"),
+        "confidence_threshold": float(state.get("confidence_threshold", 0.68)),
+        "iterations": int(state.get("iteration", 1)),
+        "loop_terminated_reason": state.get("stop_reason", "max_iterations_reached"),
+        "iteration_history": state.get("history", []),
+        "decision_log": state.get("decisions", []),
+        "data_source": DATA_SOURCE,
+        "roc_auc": state.get("roc_auc"),
+        "precision": state.get("precision"),
+        "recall": state.get("recall"),
+    }
+    return {"metrics": report}
 
 
-def build_pipeline_graph():
-    g = StateGraph(PipelineState)
+# ---------------------------------------------------------------------------
+# Routing function
+# ---------------------------------------------------------------------------
 
-    g.add_node("validate_request", _validate_request)
-    g.add_node("load_dataset", _load_dataset)
-    g.add_node("plan_iteration", _plan_iteration)
-    g.add_node("prepare_features", _prepare_features)
-    g.add_node("train_and_evaluate", _train_and_evaluate)
-    g.add_node("assess_confidence", _assess_confidence)
-    g.add_node("finalize", _finalize)
 
-    g.set_entry_point("validate_request")
-    g.add_edge("validate_request", "load_dataset")
-    g.add_edge("load_dataset", "plan_iteration")
-    g.add_edge("plan_iteration", "prepare_features")
-    g.add_edge("prepare_features", "train_and_evaluate")
-    g.add_edge("train_and_evaluate", "assess_confidence")
-    g.add_conditional_edges(
-        "assess_confidence",
-        _route_after_assessment,
+def _route_after_evaluate(state: PipelineState) -> Literal["preprocess", "report"]:
+    """Route back to preprocess for another iteration, or finalize."""
+    return "preprocess" if state.get("continue_loop", False) else "report"
+
+
+# ---------------------------------------------------------------------------
+# Graph construction
+# ---------------------------------------------------------------------------
+
+
+def build_pipeline_graph() -> Any:
+    """Build and compile the LangGraph pipeline."""
+    graph = StateGraph(PipelineState)
+
+    graph.add_node("load", load_data_node)
+    graph.add_node("preprocess", preprocess_node)
+    graph.add_node("train", train_node)
+    graph.add_node("evaluate", evaluate_node)
+    graph.add_node("report", report_node)
+
+    graph.set_entry_point("load")
+    graph.add_edge("load", "preprocess")
+    graph.add_edge("preprocess", "train")
+    graph.add_edge("train", "evaluate")
+    graph.add_conditional_edges(
+        "evaluate",
+        _route_after_evaluate,
         {
-            "prepare_features": "plan_iteration",
-            "finalize": "finalize",
+            "preprocess": "preprocess",
+            "report": "report",
         },
     )
-    g.add_edge("finalize", END)
+    graph.add_edge("report", END)
 
-    return g.compile()
+    return graph.compile()
 
 
 _PIPELINE_GRAPH = build_pipeline_graph()
@@ -280,34 +414,47 @@ def run_agentic_pipeline(
     max_iterations: int = 3,
     random_state: int = 42,
 ) -> dict[str, Any]:
+    """Run the compiled LangGraph pipeline and return a serialisable result dict."""
     final_state = _PIPELINE_GRAPH.invoke(
         {
             "dataset_name": dataset_name,
-            "confidence_threshold": confidence_threshold,
-            "max_iterations": max_iterations,
-            "random_state": random_state,
+            "confidence_threshold": normalize_threshold(confidence_threshold),
+            "max_iterations": max(1, int(max_iterations)),
+            "random_state": int(random_state),
+            "iteration": 0,
+            "history": [],
+            "decisions": [],
+            "model_name": "RandomForestRegressor",
         }
     )
 
-    return {
-        "dataset": final_state["dataset_name"],
-        "task": "regression",
-        "target": "G3_final_math_grade",
-        "n_rows": int(len(final_state["raw_df"])),
-        "n_features_encoded": int(final_state["X_full"].shape[1]),
-        "model": final_state["model_name"],
-        "test_mae": float(final_state["test_mae"]),
-        "test_r2": float(final_state["test_r2"]),
-        "cv_mae_mean": float(final_state["cv_mae_mean"]),
-        "cv_mae_std": float(final_state["cv_mae_std"]),
-        "cv_r2_mean": float(final_state["cv_r2_mean"]),
-        "cv_r2_std": float(final_state["cv_r2_std"]),
-        "confidence_score": float(final_state["confidence_score"]),
-        "confidence_label": final_state["confidence_label"],
-        "confidence_threshold": float(final_state["confidence_threshold"]),
-        "iterations": int(final_state["iteration"]),
-        "loop_terminated_reason": final_state["stop_reason"],
-        "iteration_history": final_state["history"],
-        "decision_log": final_state["decisions"],
-        "data_source": DATA_SOURCE,
-    }
+    # The report node puts the finished report in state["metrics"]
+    report = final_state.get("metrics") or {}
+    if not report:
+        # Fallback: build from state directly
+        report = {
+            "dataset": final_state.get("dataset_name", dataset_name),
+            "task": "regression",
+            "target": "G3_final_math_grade",
+            "n_rows": int(len(final_state.get("raw_df", []))),
+            "n_features_encoded": int(final_state.get("X_full", pd.DataFrame()).shape[1]),
+            "model": final_state.get("model_name", "RandomForestRegressor"),
+            "test_mae": float(final_state.get("test_mae", 0.0)),
+            "test_r2": float(final_state.get("test_r2", 0.0)),
+            "cv_mae_mean": float(final_state.get("cv_mae_mean", 0.0)),
+            "cv_mae_std": float(final_state.get("cv_mae_std", 0.0)),
+            "cv_r2_mean": float(final_state.get("cv_r2_mean", 0.0)),
+            "cv_r2_std": float(final_state.get("cv_r2_std", 0.0)),
+            "confidence_score": float(final_state.get("confidence", 0.0)),
+            "confidence_label": final_state.get("confidence_label", "low"),
+            "confidence_threshold": float(
+                final_state.get("confidence_threshold", confidence_threshold)
+            ),
+            "iterations": int(final_state.get("iteration", 1)),
+            "loop_terminated_reason": final_state.get("stop_reason", "max_iterations_reached"),
+            "iteration_history": final_state.get("history", []),
+            "decision_log": final_state.get("decisions", []),
+            "data_source": DATA_SOURCE,
+        }
+
+    return report

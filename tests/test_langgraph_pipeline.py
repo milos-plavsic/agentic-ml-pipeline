@@ -2,6 +2,7 @@ from app.langgraph_pipeline import run_agentic_pipeline
 
 
 def test_confidence_retry_loop_runs_multiple_iterations_when_threshold_high() -> None:
+    """Execute the test confidence retry loop runs multiple iterations when threshold high routine."""
     out = run_agentic_pipeline(
         dataset_name="uci_student_math",
         confidence_threshold=0.99,
@@ -15,6 +16,7 @@ def test_confidence_retry_loop_runs_multiple_iterations_when_threshold_high() ->
 
 
 def test_confidence_threshold_stops_early_when_met() -> None:
+    """Execute the test confidence threshold stops early when met routine."""
     out = run_agentic_pipeline(
         dataset_name="uci_student_math",
         confidence_threshold=0.1,

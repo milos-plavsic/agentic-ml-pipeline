@@ -10,6 +10,7 @@ import numpy as np
 
 
 def scatter_actual_vs_predicted(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path) -> None:
+    """Execute the scatter actual vs predicted routine."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -27,13 +28,14 @@ def scatter_actual_vs_predicted(y_true: np.ndarray, y_pred: np.ndarray, out_path
 
 
 def residual_histogram(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path) -> None:
+    """Execute the residual histogram routine."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     res = y_true - y_pred
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.hist(res, bins=20, color="#6a994e", edgecolor="white")
     ax.axvline(0, color="k", linestyle="--", lw=1)
-    ax.set_xlabel("Residual (actual − predicted)")
+    ax.set_xlabel("Residual (actual - predicted)")
     ax.set_ylabel("Count")
     ax.set_title("Residual distribution")
     fig.tight_layout()

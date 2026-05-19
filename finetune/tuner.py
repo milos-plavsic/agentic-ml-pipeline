@@ -4,12 +4,15 @@ import os
 
 import numpy as np
 import pandas as pd
+from ml_core import configure_logging
 from scipy.stats import randint
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 
 from app.datasets import DATA_SOURCE, load_student_math, prepare_regression_xy
+
+logger = configure_logging("tuner")
 
 
 def run_rf_hyperparam_finetune(random_state: int = 42) -> dict:
@@ -22,12 +25,12 @@ def run_rf_hyperparam_finetune(random_state: int = 42) -> dict:
         X, y, test_size=0.2, random_state=random_state
     )
     param = {
-        "n_estimators": randint(80, 400),
+        "n_estimators": randint(16, 64),
         "max_depth": [None, 8, 10, 12, 16],
         "min_samples_leaf": randint(1, 6),
         "max_features": ["sqrt", "log2", None],
     }
-    base = RandomForestRegressor(random_state=random_state, n_jobs=2)
+    base = RandomForestRegressor(random_state=random_state, n_jobs=1)
     search = RandomizedSearchCV(
         base,
         param,
@@ -40,7 +43,9 @@ def run_rf_hyperparam_finetune(random_state: int = 42) -> dict:
     )
     search.fit(X_train, y_train)
     pred = search.predict(X_test)
-    best = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in search.best_params_.items()}
+    best = {
+        k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in search.best_params_.items()
+    }
     return {
         "best_params": best,
         "test_mae": float(mean_absolute_error(y_test, pred)),
@@ -51,10 +56,11 @@ def run_rf_hyperparam_finetune(random_state: int = 42) -> dict:
 
 
 def main() -> None:
+    """Execute the main routine."""
     out = run_rf_hyperparam_finetune()
-    print("RandomForest hyperparameter search (fine-tune)")
+    logger.info("RandomForest hyperparameter search (fine-tune)")
     for k, v in out.items():
-        print(f"{k}: {v}")
+        logger.info(f"{k}: {v}")
 
 
 if __name__ == "__main__":

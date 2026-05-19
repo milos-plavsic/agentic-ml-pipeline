@@ -1,6 +1,5 @@
 from app.langgraph_pipeline import run_agentic_pipeline
 
-
 REQUIRED = {
     "confidence_score",
     "confidence_label",
@@ -13,6 +12,7 @@ REQUIRED = {
 
 
 def test_orchestration_contract_fields_present() -> None:
+    """Execute the test orchestration contract fields present routine."""
     out = run_agentic_pipeline(confidence_threshold=0.7, max_iterations=2, random_state=0)
     assert REQUIRED.issubset(set(out.keys()))
     assert 0.0 <= out["confidence_score"] <= 1.0

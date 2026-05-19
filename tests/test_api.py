@@ -8,11 +8,13 @@ client = TestClient(app)
 
 
 def test_health() -> None:
+    """Execute the test health routine."""
     r = client.get("/health")
     assert r.status_code == 200
 
 
 def test_pipeline_run() -> None:
+    """Execute the test pipeline run routine."""
     r = client.post(
         "/v1/pipeline/run",
         json={

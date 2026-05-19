@@ -2,6 +2,7 @@ import pytest
 
 
 def test_finetune_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Execute the test finetune endpoint routine."""
     monkeypatch.setenv("FINETUNE_N_ITER", "3")
     from fastapi.testclient import TestClient
 

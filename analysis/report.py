@@ -15,6 +15,7 @@ from app.datasets import DATA_SOURCE, load_student_math, prepare_regression_xy
 
 
 def generate_report(out_dir: Path | None = None, random_state: int = 42) -> dict:
+    """Execute the generate report routine."""
     out = Path(out_dir or "reports")
     fig_dir = out / "figures"
     out.mkdir(parents=True, exist_ok=True)
@@ -26,7 +27,7 @@ def generate_report(out_dir: Path | None = None, random_state: int = 42) -> dict
         X, y, test_size=0.2, random_state=random_state
     )
     model = RandomForestRegressor(
-        n_estimators=250, max_depth=12, random_state=random_state, n_jobs=4
+        n_estimators=32, max_depth=12, random_state=random_state, n_jobs=1
     )
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
@@ -42,12 +43,11 @@ def generate_report(out_dir: Path | None = None, random_state: int = 42) -> dict
     }
     (out / "summary.json").write_text(dumps_pretty(summary), encoding="utf-8")
 
-    scatter_actual_vs_predicted(
-        np.asarray(y_test), y_pred, fig_dir / "actual_vs_predicted.png"
-    )
+    scatter_actual_vs_predicted(np.asarray(y_test), y_pred, fig_dir / "actual_vs_predicted.png")
     residual_histogram(np.asarray(y_test), y_pred, fig_dir / "residuals.png")
 
     def _fmt(x: float) -> str:
+        """Internal helper that handles fmt."""
         if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
             return "n/a"
         return f"{x:.3f}"
@@ -76,6 +76,7 @@ def generate_report(out_dir: Path | None = None, random_state: int = 42) -> dict
 
 
 def main() -> None:
+    """Execute the main routine."""
     print(dumps_pretty(generate_report()))
 
 
