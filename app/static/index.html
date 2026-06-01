@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AutoML / Benchmark Studio</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    pre { background: #111; color: #eee; padding: 1rem; overflow: auto; border-radius: 8px; }
+    button { margin-right: 0.5rem; padding: 0.5rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>AutoML / Benchmark Studio</h1>
+  <p>Upload a CSV, pick a plugin, run a benchmark. API docs at <a href="/docs">/docs</a>.</p>
+  <section>
+    <h2>1. Upload dataset</h2>
+    <input type="file" id="file" accept=".csv" />
+    <button id="upload">Upload</button>
+    <p id="datasetMeta"></p>
+  </section>
+  <section>
+    <h2>2. Run plugin</h2>
+    <select id="plugin">
+      <option value="ensemble_benchmark">ensemble_benchmark</option>
+      <option value="nn_regression">nn_regression</option>
+      <option value="automl_pipeline">automl_pipeline</option>
+    </select>
+    <button id="run">Run</button>
+  </section>
+  <pre id="out">{}</pre>
+  <script>
+    const base = window.location.origin.replace(/\/ui\/?$/, '');
+    let datasetId = null;
+    document.getElementById('upload').onclick = async () => {
+      const f = document.getElementById('file').files[0];
+      if (!f) return alert('Choose a CSV');
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await fetch(base + '/v1/datasets/upload', { method: 'POST', body: fd });
+      const j = await r.json();
+      datasetId = j.dataset_id;
+      document.getElementById('datasetMeta').textContent = JSON.stringify(j, null, 2);
+    };
+    document.getElementById('run').onclick = async () => {
+      const plugin_id = document.getElementById('plugin').value;
+      const body = { plugin_id, cv_splits: 3 };
+      if (plugin_id !== 'automl_pipeline') body.dataset_id = datasetId;
+      else body.dataset_name = 'uci_student_math';
+      const r = await fetch(base + '/v1/studio/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      document.getElementById('out').textContent = JSON.stringify(await r.json(), null, 2);
+    };
+  </script>
+</body>
+</html>
