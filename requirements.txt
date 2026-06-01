@@ -1,6 +1,6 @@
 # Shared core package (canonical: https://github.com/milos-plavsic/ml-core)
 agent-core @ git+https://github.com/milos-plavsic/agent-core.git@v1.2.1
-mlflow>=2.12.0
+mlflow>=2.22.5
 ml-core @ git+https://github.com/milos-plavsic/ml-core.git@v1.0.0
 
 # Core utilities
